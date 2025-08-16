@@ -125,6 +125,7 @@ export default function CivizHomepage() {
   const [isGeneratingImage, setIsGeneratingImage] = useState(false)
   const [generatedImages, setGeneratedImages] = useState<AIGeneratedImage[]>([])
   const [generationMessage, setGenerationMessage] = useState("")
+  const [isClient, setIsClient] = useState(false)
   
   const MAX_CHARACTERS = 300
   const remainingChars = MAX_CHARACTERS - vision.length
@@ -176,6 +177,11 @@ export default function CivizHomepage() {
       saveUserPointsData(userPointsData)
     }
   }, [userPointsData])
+
+  // Set client flag after hydration
+  useEffect(() => {
+    setIsClient(true)
+  }, [])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -282,6 +288,13 @@ export default function CivizHomepage() {
           model: generatedImage.model
         })
         
+        console.log("✅ Image added to grid with data:", {
+          id: newImageData.id,
+          imageUrl: newImageData.imageUrl,
+          title: newImageData.title,
+          totalImages: imageData.length + 1
+        })
+        
       } catch (imageError) {
         console.error("Failed to generate AI image:", imageError)
         setGenerationMessage("⚠️ Image generation failed, but your vision was submitted!")
@@ -378,7 +391,9 @@ export default function CivizHomepage() {
               </a>
               <div className="flex items-center space-x-2 bg-gradient-to-r from-blue-50 to-purple-50 px-4 py-2 rounded-full group relative">
                 <Coins className="w-4 h-4 text-blue-600" />
-                <span className="font-semibold text-blue-600">{userPointsData.totalPoints.toLocaleString()}</span>
+                <span className="font-semibold text-blue-600">
+                  {isClient ? userPointsData.totalPoints.toLocaleString() : '1,250'}
+                </span>
                 
                 {/* Points Change Animation */}
                 {pointsChange.show && (
@@ -392,28 +407,30 @@ export default function CivizHomepage() {
                 )}
                 
                 {/* Points Breakdown Tooltip */}
-                <div className="absolute top-full left-0 mt-2 bg-white/95 backdrop-blur-md border border-gray-200 rounded-lg shadow-xl p-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-50 min-w-48">
-                  <div className="text-xs space-y-1">
-                    <div className="font-semibold text-gray-700 mb-2">Points Breakdown:</div>
-                    <div className="flex justify-between text-gray-600">
-                      <span>Visions:</span>
-                      <span className="font-medium text-blue-600">{userPointsData.pointsFromVisions}</span>
-                    </div>
-                    <div className="flex justify-between text-gray-600">
-                      <span>Likes:</span>
-                      <span className="font-medium text-green-600">{userPointsData.pointsFromLikes}</span>
-                    </div>
-                    <div className="flex justify-between text-gray-600">
-                      <span>Funding:</span>
-                      <span className="font-medium text-purple-600">{userPointsData.pointsFromFunding}</span>
-                    </div>
-                    <hr className="my-2" />
-                    <div className="flex justify-between font-semibold text-gray-800">
-                      <span>Total:</span>
-                      <span className="text-blue-600">{userPointsData.totalPoints}</span>
+                {isClient && (
+                  <div className="absolute top-full left-0 mt-2 bg-white/95 backdrop-blur-md border border-gray-200 rounded-lg shadow-xl p-3 opacity-0 group-hover:opacity-100 transition-opacity duration-200 pointer-events-none z-50 min-w-48">
+                    <div className="text-xs space-y-1">
+                      <div className="font-semibold text-gray-700 mb-2">Points Breakdown:</div>
+                      <div className="flex justify-between text-gray-600">
+                        <span>Visions:</span>
+                        <span className="font-medium text-blue-600">{userPointsData.pointsFromVisions}</span>
+                      </div>
+                      <div className="flex justify-between text-gray-600">
+                        <span>Likes:</span>
+                        <span className="font-medium text-green-600">{userPointsData.pointsFromLikes}</span>
+                      </div>
+                      <div className="flex justify-between text-gray-600">
+                        <span>Funding:</span>
+                        <span className="font-medium text-purple-600">{userPointsData.pointsFromFunding}</span>
+                      </div>
+                      <hr className="my-2" />
+                      <div className="flex justify-between font-semibold text-gray-800">
+                        <span>Total:</span>
+                        <span className="text-blue-600">{userPointsData.totalPoints}</span>
+                      </div>
                     </div>
                   </div>
-                </div>
+                )}
               </div>
             </nav>
 

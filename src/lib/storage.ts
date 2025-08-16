@@ -25,7 +25,7 @@ export function loadImageData(): ImageData[] | null {
     
     const data = JSON.parse(stored)
     // Convert date strings back to Date objects
-    return data.map((img: any) => ({
+    return data.map((img: ImageData & { createdAt: string }) => ({
       ...img,
       createdAt: new Date(img.createdAt)
     }))

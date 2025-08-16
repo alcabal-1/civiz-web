@@ -93,60 +93,70 @@ export class AIImageService {
   }
 
   /**
-   * Generate a stunning civic vision image using Stable Diffusion
+   * Generate a stunning civic vision image using our API route
    */
   async generateCivicVision(
     userVision: string, 
     categoryId: string
   ): Promise<AIGeneratedImage> {
     try {
-      // Build the enhanced prompt
-      const prompt = this.buildEnhancedPrompt(userVision, categoryId)
+      console.log('🎨 Calling AI generation API for:', userVision)
       
-      // If no API key, return a high-quality placeholder with proper metadata
-      if (!this.replicate) {
-        console.warn('Replicate API key not found. Using placeholder image.')
-        return this.generatePlaceholder(userVision, categoryId, prompt)
-      }
+      // Call our API route which handles Replicate
+      const response = await fetch('/api/generate-vision', {
+        method: 'POST',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({
+          userVision,
+          categoryId
+        })
+      })
 
-      // Generate image using Stable Diffusion XL
-      console.log('Generating civic vision with prompt:', prompt)
-      
-      const output = await this.replicate.run(
-        this.modelVersion,
-        {
-          input: {
-            prompt: prompt,
-            negative_prompt: "low quality, blurry, distorted, ugly, bad anatomy, bad proportions, cartoon, anime, sketch, painting",
-            width: 1024,
-            height: 768,
-            num_outputs: 1,
-            scheduler: "K_EULER",
-            num_inference_steps: 30,
-            guidance_scale: 7.5,
-            prompt_strength: 0.9,
-            refine: "expert_ensemble_refiner",
-            high_noise_frac: 0.8
+      if (!response.ok) {
+        let errorData;
+        try {
+          const responseText = await response.text()
+          if (responseText.trim()) {
+            errorData = JSON.parse(responseText)
+          } else {
+            console.warn('Empty error response body')
+            errorData = { error: 'Empty response from server' }
           }
+        } catch (jsonError) {
+          console.error('Failed to parse error response as JSON:', jsonError)
+          throw new Error(`API Error: ${response.status} ${response.statusText}`)
         }
-      ) as string[]
-
-      if (!output || output.length === 0) {
-        throw new Error('No image generated from AI model')
+        throw new Error(`API Error: ${errorData.error || 'Unknown error'}`)
       }
 
+      let result;
+      try {
+        const responseText = await response.text()
+        if (responseText.trim()) {
+          result = JSON.parse(responseText)
+        } else {
+          console.warn('Empty success response body')
+          throw new Error('Empty response from API')
+        }
+      } catch (jsonError) {
+        console.error('Failed to parse success response as JSON:', jsonError)
+        throw new Error('Invalid JSON response from API')
+      }
+      
       return {
-        id: `ai-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-        imageUrl: output[0],
-        prompt: prompt,
-        userVision: userVision,
-        categoryId: categoryId,
-        generatedAt: new Date(),
-        model: 'stable-diffusion-xl'
+        id: result.id,
+        imageUrl: result.imageUrl,
+        prompt: result.prompt,
+        userVision: result.userVision,
+        categoryId: result.categoryId,
+        generatedAt: new Date(result.generatedAt),
+        model: result.model
       }
 
     } catch (error) {
-      console.error('Error generating AI image:', error)
+      console.error('Error calling AI generation API:', error)
       // Fallback to placeholder on error
       const prompt = this.buildEnhancedPrompt(userVision, categoryId)
       return this.generatePlaceholder(userVision, categoryId, prompt)
