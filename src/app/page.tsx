@@ -30,7 +30,14 @@ import {
   sortImagesByPoints,
   POINT_VALUES 
 } from "@/lib/pointsSystem"
-import { DalleService, visionToImageRequest, type GeneratedImage } from "@/lib/dalleService"
+import { aiImageService, type AIGeneratedImage } from "@/lib/aiImageService"
+import { 
+  saveImageData, 
+  loadImageData, 
+  saveUserPointsData, 
+  loadUserPointsData,
+  isStorageAvailable 
+} from "@/lib/storage"
 
 // Icon mapping for dynamic loading
 const iconMap = {
@@ -89,43 +96,86 @@ export default function CivizHomepage() {
   const [showCategoryMatch, setShowCategoryMatch] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
   
-  // Points system state
-  const [userPointsData, setUserPointsData] = useState<UserPointsData>({
-    totalPoints: 1250,
-    pointsFromVisions: 1200,
-    pointsFromLikes: 25,
-    pointsFromFunding: 25,
-    likedImages: []
+  // Points system state - initialize with default or stored values
+  const [userPointsData, setUserPointsData] = useState<UserPointsData>(() => {
+    if (typeof window !== 'undefined' && isStorageAvailable()) {
+      const stored = loadUserPointsData()
+      if (stored) return stored
+    }
+    return {
+      totalPoints: 1250,
+      pointsFromVisions: 1200,
+      pointsFromLikes: 25,
+      pointsFromFunding: 25,
+      likedImages: []
+    }
   })
-  const [imageData, setImageData] = useState<ImageData[]>([])
+  const [imageData, setImageData] = useState<ImageData[]>(() => {
+    if (typeof window !== 'undefined' && isStorageAvailable()) {
+      const stored = loadImageData()
+      if (stored && stored.length > 0) {
+        // Sort by points on initial load for fresh session
+        return sortImagesByPoints(stored)
+      }
+    }
+    return []
+  })
   const [likeAnimations, setLikeAnimations] = useState<{[key: string]: boolean}>({})
   const [pointsChange, setPointsChange] = useState<{amount: number, show: boolean}>({amount: 0, show: false})
   const [isGeneratingImage, setIsGeneratingImage] = useState(false)
-  const [generatedImages, setGeneratedImages] = useState<GeneratedImage[]>([])
+  const [generatedImages, setGeneratedImages] = useState<AIGeneratedImage[]>([])
+  const [generationMessage, setGenerationMessage] = useState("")
   
   const MAX_CHARACTERS = 300
   const remainingChars = MAX_CHARACTERS - vision.length
   const isActive = isFocused || vision.length > 0
   const isValidVision = vision.trim().length > 10 && vision.length <= MAX_CHARACTERS
 
-  // Initialize mock image data
+  // Initialize data on mount - load from storage or use test data
   useEffect(() => {
-    const testImages: ImageData[] = cityCategories.slice(0, 9).map((category, index) => ({
-      id: `test-${category.id}-${index}`,
-      categoryId: category.id,
-      imageUrl: category.image,
-      title: `${category.name} Vision`,
-      description: `Test vision for ${category.name}`,
-      submitterPoints: 100 + index * 50,
-      likes: Math.floor(Math.random() * 10) + 1,
-      points: Math.floor(Math.random() * 50) + 10,
-      likedBy: [],
-      submitterId: `user-${index}`,
-      createdAt: new Date()
-    }))
+    // Check if we already loaded from storage in the state initializer
+    if (typeof window !== 'undefined' && isStorageAvailable()) {
+      const stored = loadImageData()
+      if (stored && stored.length > 0) {
+        // Already have stored data, don't add test images
+        return
+      }
+    }
     
-    setImageData(testImages)
+    // Only add test images if we have no stored data and no current data
+    if (imageData.length === 0) {
+      const testImages: ImageData[] = cityCategories.slice(0, 9).map((category, index) => ({
+        id: `test-${category.id}-${Date.now()}-${index}`, // Added timestamp for unique IDs
+        categoryId: category.id,
+        imageUrl: category.image,
+        title: `${category.name} Vision`,
+        description: `Test vision for ${category.name}`,
+        submitterPoints: 100 + index * 50,
+        likes: Math.floor(Math.random() * 10) + 1,
+        points: Math.floor(Math.random() * 50) + 10,
+        likedBy: [],
+        submitterId: `user-${index}`,
+        createdAt: new Date()
+      }))
+      
+      // Sort test images by points on initial creation
+      setImageData(sortImagesByPoints(testImages))
+    }
   }, [])
+
+  // Save imageData to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined' && isStorageAvailable() && imageData.length > 0) {
+      saveImageData(imageData)
+    }
+  }, [imageData])
+
+  // Save userPointsData to localStorage whenever it changes
+  useEffect(() => {
+    if (typeof window !== 'undefined' && isStorageAvailable()) {
+      saveUserPointsData(userPointsData)
+    }
+  }, [userPointsData])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -192,22 +242,21 @@ export default function CivizHomepage() {
         setTimeout(() => setShowCategoryMatch(false), 4000)
       }
 
-      // Start image generation with DALL-E
+      // Start real AI image generation
       setIsGeneratingImage(true)
+      setGenerationMessage("✨ Generating your civic vision...")
+      
       try {
-        const imageRequest = visionToImageRequest(
-          vision.trim(), 
-          matchedCat?.name, 
-          'realistic'
+        // Generate stunning AI image based on user vision and category
+        const generatedImage = await aiImageService.generateCivicVision(
+          vision.trim(),
+          matchedCat?.id || 'community-services'
         )
         
-        // Generate image using DALL-E
-        const generatedImage = await DalleService.generateImage(imageRequest)
-        
-        // Convert generated image to ImageData format
+        // Convert AI generated image to ImageData format
         const newImageData: ImageData = {
           id: generatedImage.id,
-          categoryId: matchedCat?.id || 'community-services',
+          categoryId: generatedImage.categoryId,
           imageUrl: generatedImage.imageUrl,
           title: `Vision: ${vision.trim().slice(0, 50)}...`,
           description: vision.trim(),
@@ -219,15 +268,24 @@ export default function CivizHomepage() {
           createdAt: generatedImage.generatedAt
         }
         
-        // Add new image to the grid
-        setImageData(prev => sortImagesByPoints([newImageData, ...prev]))
+        // Add new image to the grid (appears in first position)
+        setImageData(prev => [newImageData, ...prev])
         setGeneratedImages(prev => [generatedImage, ...prev])
         
-        console.log("Generated image for vision:", generatedImage.imageUrl)
+        // Success message
+        setGenerationMessage("✨ Your civic vision has been created!")
+        setTimeout(() => setGenerationMessage(""), 3000)
+        
+        console.log("AI Generated civic vision:", {
+          imageUrl: generatedImage.imageUrl,
+          prompt: generatedImage.prompt,
+          model: generatedImage.model
+        })
         
       } catch (imageError) {
-        console.error("Failed to generate image:", imageError)
-        // Continue with vision submission even if image generation fails
+        console.error("Failed to generate AI image:", imageError)
+        setGenerationMessage("⚠️ Image generation failed, but your vision was submitted!")
+        setTimeout(() => setGenerationMessage(""), 3000)
       } finally {
         setIsGeneratingImage(false)
       }
@@ -254,7 +312,10 @@ export default function CivizHomepage() {
   // Handle image like/unlike
   const handleImageLike = (imageId: string) => {
     const image = imageData.find(img => img.id === imageId)
-    if (!image) return
+    if (!image) {
+      console.error('Image not found:', imageId)
+      return
+    }
 
     const isCurrentlyLiked = userPointsData.likedImages.includes(imageId)
 
@@ -264,7 +325,8 @@ export default function CivizHomepage() {
       const updatedUserPoints = updateUserPointsOnUnlike(userPointsData, imageId)
       
       setImageData(prev => 
-        sortImagesByPoints(prev.map(img => img.id === imageId ? updatedImage : img))
+        // Keep images in place during active session - no sorting
+        prev.map(img => img.id === imageId ? updatedImage : img)
       )
       setUserPointsData(updatedUserPoints)
       showPointsChange(-POINT_VALUES.IMAGE_LIKE)
@@ -274,7 +336,8 @@ export default function CivizHomepage() {
       const updatedUserPoints = updateUserPointsOnLike(userPointsData, imageId)
       
       setImageData(prev => 
-        sortImagesByPoints(prev.map(img => img.id === imageId ? updatedImage : img))
+        // Keep images in place during active session - no sorting
+        prev.map(img => img.id === imageId ? updatedImage : img)
       )
       setUserPointsData(updatedUserPoints)
       showPointsChange(POINT_VALUES.IMAGE_LIKE)
@@ -283,7 +346,7 @@ export default function CivizHomepage() {
       setLikeAnimations(prev => ({ ...prev, [imageId]: true }))
       setTimeout(() => {
         setLikeAnimations(prev => ({ ...prev, [imageId]: false }))
-      }, 1000)
+      }, 1500)
     }
   }
 
@@ -373,12 +436,18 @@ export default function CivizHomepage() {
               <div className="relative aspect-square group cursor-pointer overflow-hidden bg-gradient-to-br from-purple-500 to-blue-500">
                 <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
                 
-                {/* Generation Animation */}
+                {/* Enhanced Generation Animation */}
                 <div className="absolute inset-0 flex items-center justify-center">
-                  <div className="text-center">
-                    <Sparkles className="w-8 h-8 text-white animate-pulse mx-auto mb-2" />
-                    <div className="text-white text-xs font-semibold animate-bounce">
-                      Generating...
+                  <div className="text-center px-3">
+                    <div className="relative">
+                      <Sparkles className="w-12 h-12 text-white animate-pulse mx-auto mb-3" />
+                      <div className="absolute inset-0 blur-xl bg-white/20 animate-ping" />
+                    </div>
+                    <div className="text-white text-sm font-bold mb-1">
+                      {generationMessage || "✨ Generating your vision..."}
+                    </div>
+                    <div className="text-white/80 text-xs">
+                      AI is creating your civic vision
                     </div>
                   </div>
                 </div>
@@ -398,7 +467,7 @@ export default function CivizHomepage() {
                 </div>
               </div>
             )}
-            {imageData.slice(0, isGeneratingImage ? 8 : 9).map((image, index) => {
+            {imageData.slice(0, Math.min(imageData.length, isGeneratingImage ? 8 : 9)).map((image, index) => {
               const category = cityCategories.find(cat => cat.id === image.categoryId)
               if (!category) return null
               
@@ -406,8 +475,15 @@ export default function CivizHomepage() {
               const isLiked = userPointsData.likedImages.includes(image.id)
               const showAnimation = likeAnimations[image.id]
               
+              // Determine if this image is high performing (top 3 by points)
+              const sortedByPoints = [...imageData].sort((a, b) => b.points - a.points)
+              const rankByPoints = sortedByPoints.findIndex(img => img.id === image.id) + 1
+              const isTopPerformer = rankByPoints <= 3
+              
               return (
-                <div key={image.id} className="relative aspect-square group cursor-pointer overflow-hidden">
+                <div key={image.id} className={`relative aspect-square group cursor-pointer overflow-hidden ${
+                  isTopPerformer ? 'ring-2 ring-yellow-400 ring-opacity-60' : ''
+                }`}>
                   <Image
                     src={image.imageUrl || "/placeholder.svg"}
                     alt={image.title}
@@ -416,26 +492,41 @@ export default function CivizHomepage() {
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
                   
+                  {/* Points Badge for high performers */}
+                  {isTopPerformer && (
+                    <div className="absolute top-3 left-3 z-10">
+                      <div className="bg-gradient-to-r from-yellow-400 to-orange-400 text-white text-xs font-bold px-2 py-1 rounded-full shadow-lg flex items-center">
+                        <TrendingUp className="w-3 h-3 mr-1" />
+                        #{rankByPoints}
+                      </div>
+                    </div>
+                  )}
+                  
                   {/* Like Button */}
                   <button
                     onClick={(e) => {
                       e.stopPropagation()
                       handleImageLike(image.id)
                     }}
-                    className={`absolute top-3 right-3 p-2 rounded-full transition-all duration-200 ${
+                    className={`absolute top-3 right-3 p-2 rounded-full transition-all duration-200 z-10 
+                      transform hover:scale-110 active:scale-95 
+                      ${
                       isLiked 
-                        ? 'bg-red-500 text-white shadow-lg' 
-                        : 'bg-white/20 text-white hover:bg-white/30'
+                        ? 'bg-red-500 text-white shadow-lg hover:bg-red-600' 
+                        : 'bg-white/20 backdrop-blur-sm text-white hover:bg-white/40 hover:shadow-md'
                     }`}
                   >
-                    <Heart className={`w-4 h-4 ${isLiked ? 'fill-current' : ''}`} />
+                    <Heart className={`w-4 h-4 transition-all duration-200 ${isLiked ? 'fill-current' : ''}`} />
                   </button>
 
                   {/* Like Animation */}
                   {showAnimation && (
-                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none">
-                      <div className="bg-red-500 text-white px-3 py-2 rounded-full shadow-xl animate-bounce">
-                        +{POINT_VALUES.IMAGE_LIKE} pt
+                    <div className="absolute inset-0 flex items-center justify-center pointer-events-none z-20">
+                      <div className="relative">
+                        <div className="absolute inset-0 bg-red-500 rounded-full blur-xl animate-ping" />
+                        <div className="relative bg-red-500 text-white px-4 py-2 rounded-full shadow-xl animate-bounce font-semibold">
+                          +{POINT_VALUES.IMAGE_LIKE} pt
+                        </div>
                       </div>
                     </div>
                   )}
@@ -448,18 +539,25 @@ export default function CivizHomepage() {
                     </div>
                     <h3 className="text-white font-semibold text-sm leading-tight">{category.name}</h3>
                     
-                    {/* Points and Likes Display */}
-                    <div className="flex items-center justify-between mt-1 text-white/80 text-xs">
-                      <span>{image.likes} likes</span>
+                    {/* Points and Likes Display with glow for high points */}
+                    <div className={`flex items-center justify-between mt-1 text-xs ${
+                      image.points > 50 ? 'text-yellow-300' : 'text-white/80'
+                    }`}>
+                      <span className="flex items-center">
+                        <Heart className="w-3 h-3 mr-1 fill-current" />
+                        {image.likes}
+                      </span>
                       <div className="flex items-center space-x-1">
-                        <span>{image.points} pts</span>
+                        <span className={`font-semibold ${
+                          image.points > 50 ? 'text-shadow-glow' : ''
+                        }`}>{image.points} pts</span>
                         {image.submitterId === CURRENT_USER_ID && (
                           <Sparkles className="w-3 h-3 text-purple-300" />
                         )}
                       </div>
                     </div>
                   </div>
-                  <div className="absolute inset-0 bg-blue-600/0 group-hover:bg-blue-600/20 transition-colors duration-300" />
+                  <div className="absolute inset-0 bg-blue-600/0 group-hover:bg-blue-600/20 transition-colors duration-300 pointer-events-none" />
                 </div>
               )
             })}
@@ -574,6 +672,30 @@ export default function CivizHomepage() {
           </Button>
         </div>
       </div>
+
+      {/* AI Generation Success Notification */}
+      {generationMessage && generationMessage.includes("created") && (
+        <div className="fixed inset-x-0 top-20 z-50 px-4 pointer-events-none">
+          <div className="max-w-md mx-auto pointer-events-auto">
+            <div className="bg-gradient-to-r from-purple-500 to-blue-500 text-white rounded-xl shadow-2xl p-4 animate-in slide-in-from-top duration-500">
+              <div className="flex items-center space-x-3">
+                <div className="bg-white/20 backdrop-blur rounded-lg p-2">
+                  <Sparkles className="w-6 h-6 text-white" />
+                </div>
+                <div className="flex-1">
+                  <h4 className="font-bold text-white mb-1">Vision Created!</h4>
+                  <p className="text-white/90 text-sm">
+                    Your civic vision has been transformed into a stunning AI image
+                  </p>
+                </div>
+              </div>
+              <button className="mt-3 w-full bg-white/20 hover:bg-white/30 text-white font-semibold py-2 px-4 rounded-lg transition-colors">
+                Share Your Vision 🚀
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Category Match Notification */}
       {showCategoryMatch && matchedCategory && (
