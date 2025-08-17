@@ -17,8 +17,12 @@ import {
   Gift,
   Sparkles,
   Image as ImageIcon,
+  Share2,
+  Eye,
+  Crown,
 } from "lucide-react"
 import Image from "next/image"
+import Link from "next/link"
 import { cityCategories, categorizeVision, type CityCategory } from "@/lib/cityData"
 import { 
   type ImageData, 
@@ -38,6 +42,10 @@ import {
   loadUserPointsData,
   isStorageAvailable 
 } from "@/lib/storage"
+import { ViewToggle } from "@/components/ui/view-toggle"
+import { ShareButton } from "@/components/ui/share-button"
+import { api, type Vision, CURRENT_USER_ID as API_USER_ID } from "@/lib/api"
+import { motion, AnimatePresence } from "framer-motion"
 
 // Icon mapping for dynamic loading
 const iconMap = {
@@ -95,6 +103,13 @@ export default function CivizHomepage() {
   const [matchedCategory, setMatchedCategory] = useState<CityCategory | null>(null)
   const [showCategoryMatch, setShowCategoryMatch] = useState(false)
   const textareaRef = useRef<HTMLTextAreaElement>(null)
+  
+  // New state for dual-mode viewing
+  const [viewMode, setViewMode] = useState<"personal" | "pulse">("pulse")
+  const [myVisions, setMyVisions] = useState<Vision[]>([])
+  const [cityVisions, setCityVisions] = useState<Vision[]>([])
+  const [userLikedVisions, setUserLikedVisions] = useState<Set<string>>(new Set())
+  const [isLoadingVisions, setIsLoadingVisions] = useState(false)
   
   // Points system state - initialize with default or stored values
   const [userPointsData, setUserPointsData] = useState<UserPointsData>(() => {
@@ -182,6 +197,38 @@ export default function CivizHomepage() {
   useEffect(() => {
     setIsClient(true)
   }, [])
+  
+  // Load visions based on view mode
+  useEffect(() => {
+    const loadVisions = async () => {
+      setIsLoadingVisions(true)
+      try {
+        const [myData, cityData] = await Promise.all([
+          api.visions.fetchMy(),
+          api.visions.fetchCity()
+        ])
+        
+        setMyVisions(myData)
+        setCityVisions(cityData)
+        
+        // Get liked status for all visions
+        const allVisionIds = [...myData, ...cityData].map(v => v.id)
+        const likedSet = await api.visions.getLikedStatus(allVisionIds)
+        setUserLikedVisions(likedSet)
+      } catch (error) {
+        console.error("Failed to load visions:", error)
+      } finally {
+        setIsLoadingVisions(false)
+      }
+    }
+    
+    loadVisions()
+  }, [])
+  
+  // Track view mode changes
+  useEffect(() => {
+    api.analytics.trackToggle(viewMode)
+  }, [viewMode])
 
   // Auto-resize textarea
   useEffect(() => {
@@ -259,7 +306,29 @@ export default function CivizHomepage() {
           matchedCat?.id || 'community-services'
         )
         
-        // Convert AI generated image to ImageData format
+        // Convert AI generated image to Vision format for new system
+        const newVision: Vision = {
+          id: generatedImage.id,
+          imageUrl: generatedImage.imageUrl,
+          promptText: vision.trim(),
+          category: matchedCat?.name || 'Community Services',
+          categoryId: generatedImage.categoryId,
+          likes: 0,
+          createdAt: generatedImage.generatedAt,
+          userId: API_USER_ID,
+          trending: false,
+          budgetImpact: matchedCat ? {
+            allocated: matchedCat.totalBudget,
+            remaining: matchedCat.remainingFunding,
+            percentage: Math.round(((matchedCat.totalBudget - matchedCat.remainingFunding) / matchedCat.totalBudget) * 100)
+          } : undefined
+        }
+        
+        // Add to both personal and city visions
+        setMyVisions(prev => [newVision, ...prev])
+        setCityVisions(prev => [newVision, ...prev])
+        
+        // Also add to legacy imageData for compatibility
         const newImageData: ImageData = {
           id: generatedImage.id,
           categoryId: generatedImage.categoryId,
@@ -268,19 +337,20 @@ export default function CivizHomepage() {
           description: vision.trim(),
           submitterPoints: userPointsData.totalPoints,
           likes: 0,
-          points: Math.floor(userPointsData.totalPoints * 0.1), // 10% of submitter points as starting points
+          points: Math.floor(userPointsData.totalPoints * 0.1),
           likedBy: [],
           submitterId: CURRENT_USER_ID,
           createdAt: generatedImage.generatedAt
         }
-        
-        // Add new image to the grid (appears in first position)
         setImageData(prev => [newImageData, ...prev])
         setGeneratedImages(prev => [generatedImage, ...prev])
         
-        // Success message
+        // Success message and stop generation
         setGenerationMessage("✨ Your civic vision has been created!")
-        setTimeout(() => setGenerationMessage(""), 3000)
+        setTimeout(() => {
+          setGenerationMessage("")
+          setIsGeneratingImage(false)
+        }, 3000)
         
         console.log("AI Generated civic vision:", {
           imageUrl: generatedImage.imageUrl,
@@ -322,7 +392,7 @@ export default function CivizHomepage() {
     }, 2000)
   }
 
-  // Handle image like/unlike
+  // Handle image like/unlike (legacy)
   const handleImageLike = (imageId: string) => {
     const image = imageData.find(img => img.id === imageId)
     if (!image) {
@@ -360,6 +430,105 @@ export default function CivizHomepage() {
       setTimeout(() => {
         setLikeAnimations(prev => ({ ...prev, [imageId]: false }))
       }, 1500)
+    }
+  }
+  
+  // Prepare visions for grid display based on view mode
+  const getGridVisions = (): Vision[] => {
+    if (viewMode === "personal") {
+      // My View: Hero spot (most recent) + rest sorted by likes
+      const userVisions = myVisions.filter(v => v.userId === API_USER_ID)
+      
+      if (userVisions.length === 0) {
+        // If user has no visions, show top city visions for discovery
+        return cityVisions.slice(0, 9)
+      }
+      
+      // Sort user visions: most recent first for hero spot
+      const sortedByDate = [...userVisions].sort((a, b) => b.createdAt.getTime() - a.createdAt.getTime())
+      const heroVision = sortedByDate[0]
+      
+      // Rest sorted by likes
+      const restVisions = userVisions
+        .filter(v => v.id !== heroVision.id)
+        .sort((a, b) => b.likes - a.likes)
+      
+      // Combine: hero + rest + fill with top city visions
+      const personalGrid = [heroVision, ...restVisions]
+      const fillCount = Math.max(0, 9 - personalGrid.length)
+      const fillVisions = cityVisions
+        .filter(v => !personalGrid.some(pv => pv.id === v.id))
+        .slice(0, fillCount)
+      
+      return [...personalGrid, ...fillVisions].slice(0, 9)
+    } else {
+      // City View: All visions sorted by likes (democratic ranking)
+      return cityVisions.slice(0, 9)
+    }
+  }
+  
+  // Handle vision like with new API
+  const handleVisionLike = async (visionId: string) => {
+    const isLiked = userLikedVisions.has(visionId)
+    
+    // Optimistic update
+    setUserLikedVisions(prev => {
+      const newSet = new Set(prev)
+      if (isLiked) {
+        newSet.delete(visionId)
+      } else {
+        newSet.add(visionId)
+      }
+      return newSet
+    })
+    
+    // Update local vision data optimistically
+    const updateVisionLikes = (vision: Vision) => {
+      if (vision.id === visionId) {
+        return { ...vision, likes: isLiked ? vision.likes - 1 : vision.likes + 1 }
+      }
+      return vision
+    }
+    
+    setMyVisions(prev => prev.map(updateVisionLikes))
+    setCityVisions(prev => prev.map(updateVisionLikes).sort((a, b) => b.likes - a.likes))
+    
+    // Show animation and points change
+    if (!isLiked) {
+      setLikeAnimations(prev => ({ ...prev, [visionId]: true }))
+      showPointsChange(POINT_VALUES.IMAGE_LIKE)
+      setTimeout(() => {
+        setLikeAnimations(prev => ({ ...prev, [visionId]: false }))
+      }, 1500)
+    } else {
+      showPointsChange(-POINT_VALUES.IMAGE_LIKE)
+    }
+    
+    try {
+      // Make API call
+      const result = await api.visions.like(visionId)
+      await api.analytics.trackLike(visionId, result.liked)
+      
+      // Update points
+      setUserPointsData(prev => ({
+        ...prev,
+        totalPoints: prev.totalPoints + (result.liked ? POINT_VALUES.IMAGE_LIKE : -POINT_VALUES.IMAGE_LIKE),
+        pointsFromLikes: prev.pointsFromLikes + (result.liked ? POINT_VALUES.IMAGE_LIKE : -POINT_VALUES.IMAGE_LIKE)
+      }))
+    } catch (error) {
+      console.error("Failed to like vision:", error)
+      // Revert optimistic update on error
+      setUserLikedVisions(prev => {
+        const newSet = new Set(prev)
+        if (isLiked) {
+          newSet.add(visionId)
+        } else {
+          newSet.delete(visionId)
+        }
+        return newSet
+      })
+      setMyVisions(prev => prev.map(v => v.id === visionId ? { ...v, likes: isLiked ? v.likes + 1 : v.likes - 1 } : v))
+      setCityVisions(prev => prev.map(v => v.id === visionId ? { ...v, likes: isLiked ? v.likes + 1 : v.likes - 1 } : v))
     }
   }
 
@@ -445,11 +614,42 @@ export default function CivizHomepage() {
         </div>
       </header>
 
-      {/* Tight 3x3 Civic Impact Collage */}
+      {/* Tight 3x3 Civic Impact Collage with Toggle */}
       <section className="pt-16 pb-8">
         <div className="max-w-4xl mx-auto px-4">
-          <div className="grid grid-cols-3 gap-1 rounded-2xl overflow-hidden shadow-2xl">
-            {isGeneratingImage && imageData.length < 9 && (
+          {/* View Toggle and Title */}
+          <div className="flex items-center justify-between mb-6">
+            <div>
+              <h2 className="text-2xl font-bold text-slate-900 mb-1">
+                {viewMode === "personal" ? "Your Civic Impact" : "Community Pulse"}
+              </h2>
+              <p className="text-sm text-slate-600">
+                {viewMode === "personal" 
+                  ? "Your visions and community favorites" 
+                  : "What our city is envisioning together"}
+              </p>
+            </div>
+            <ViewToggle 
+              mode={viewMode} 
+              onChange={(mode) => {
+                setViewMode(mode)
+                // Smooth transition animation
+                setIsLoadingVisions(true)
+                setTimeout(() => setIsLoadingVisions(false), 300)
+              }}
+            />
+          </div>
+          
+          <AnimatePresence mode="wait">
+            <motion.div 
+              key={viewMode}
+              initial={{ opacity: 0, scale: 0.95 }}
+              animate={{ opacity: 1, scale: 1 }}
+              exit={{ opacity: 0, scale: 0.95 }}
+              transition={{ duration: 0.3 }}
+              className="grid grid-cols-3 gap-1 rounded-2xl overflow-hidden shadow-2xl"
+            >
+            {isGeneratingImage && (
               <div className="relative aspect-square group cursor-pointer overflow-hidden bg-gradient-to-br from-purple-500 to-blue-500">
                 <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
                 
@@ -484,57 +684,84 @@ export default function CivizHomepage() {
                 </div>
               </div>
             )}
-            {imageData.slice(0, Math.min(imageData.length, isGeneratingImage ? 8 : 9)).map((image, index) => {
-              const category = cityCategories.find(cat => cat.id === image.categoryId)
+            {/* Display visions based on mode */}
+            {getGridVisions().slice(0, isGeneratingImage ? 8 : 9).map((vision, index) => {
+              const category = cityCategories.find(cat => cat.id === vision.categoryId)
               if (!category) return null
               
               const IconComponent = iconMap[category.icon as keyof typeof iconMap]
-              const isLiked = userPointsData.likedImages.includes(image.id)
-              const showAnimation = likeAnimations[image.id]
+              const isLiked = userLikedVisions.has(vision.id)
+              const showAnimation = likeAnimations[vision.id]
+              const isHeroSpot = viewMode === "personal" && index === 0 && vision.userId === API_USER_ID
+              const isUserVision = vision.userId === API_USER_ID
               
-              // Determine if this image is high performing (top 3 by points)
-              const sortedByPoints = [...imageData].sort((a, b) => b.points - a.points)
-              const rankByPoints = sortedByPoints.findIndex(img => img.id === image.id) + 1
-              const isTopPerformer = rankByPoints <= 3
+              // Determine position in rankings
+              const position = index + 1
               
               return (
-                <div key={image.id} className={`relative aspect-square group cursor-pointer overflow-hidden ${
-                  isTopPerformer ? 'ring-2 ring-yellow-400 ring-opacity-60' : ''
-                }`}>
+                <motion.div 
+                  key={vision.id} 
+                  layoutId={vision.id}
+                  initial={{ opacity: 0, scale: 0.9 }}
+                  animate={{ opacity: 1, scale: 1 }}
+                  transition={{ delay: index * 0.05 }}
+                  className={`relative aspect-square group cursor-pointer overflow-hidden ${
+                    isHeroSpot ? 'ring-2 ring-purple-500 ring-opacity-75' : 
+                    position <= 3 && viewMode === "pulse" ? 'ring-2 ring-yellow-400 ring-opacity-60' : ''
+                  }`}>
                   <Image
-                    src={image.imageUrl || "/placeholder.svg"}
-                    alt={image.title}
+                    src={vision.imageUrl || "/placeholder.svg"}
+                    alt={vision.promptText}
                     fill
                     className="object-cover group-hover:scale-110 transition-transform duration-500"
                   />
                   <div className="absolute inset-0 bg-gradient-to-t from-black/70 via-black/20 to-transparent" />
                   
-                  {/* Points Badge for high performers */}
-                  {isTopPerformer && (
+                  {/* Hero Badge for personal view */}
+                  {isHeroSpot && (
                     <div className="absolute top-3 left-3 z-10">
-                      <div className="bg-gradient-to-r from-yellow-400 to-orange-400 text-white text-xs font-bold px-2 py-1 rounded-full shadow-lg flex items-center">
-                        <TrendingUp className="w-3 h-3 mr-1" />
-                        #{rankByPoints}
+                      <div className="bg-gradient-to-r from-purple-500 to-blue-500 text-white text-xs font-bold px-2 py-1 rounded-full shadow-lg flex items-center">
+                        <Crown className="w-3 h-3 mr-1" />
+                        Most Recent
                       </div>
                     </div>
                   )}
                   
-                  {/* Like Button */}
-                  <button
-                    onClick={(e) => {
-                      e.stopPropagation()
-                      handleImageLike(image.id)
-                    }}
-                    className={`absolute top-3 right-3 p-2 rounded-full transition-all duration-200 z-10 
-                      transform hover:scale-110 active:scale-95 
-                      ${
-                      isLiked 
-                        ? 'bg-red-500 text-white shadow-lg hover:bg-red-600' 
-                        : 'bg-white/20 backdrop-blur-sm text-white hover:bg-white/40 hover:shadow-md'
-                    }`}
-                  >
-                    <Heart className={`w-4 h-4 transition-all duration-200 ${isLiked ? 'fill-current' : ''}`} />
-                  </button>
+                  {/* Position Badge for City View */}
+                  {viewMode === "pulse" && position <= 3 && (
+                    <div className="absolute top-3 left-3 z-10">
+                      <div className="bg-gradient-to-r from-yellow-400 to-orange-400 text-white text-xs font-bold px-2 py-1 rounded-full shadow-lg flex items-center">
+                        <TrendingUp className="w-3 h-3 mr-1" />
+                        #{position}
+                      </div>
+                    </div>
+                  )}
+                  
+                  {/* Action Buttons */}
+                  <div className="absolute top-3 right-3 flex items-center space-x-1 z-10">
+                    <ShareButton
+                      visionId={vision.id}
+                      promptText={vision.promptText.slice(0, 100)}
+                      position={viewMode === "pulse" ? position : undefined}
+                      category={category.name}
+                      className="p-2 rounded-full bg-white/20 backdrop-blur-sm text-white hover:bg-white/40 hover:shadow-md transition-all duration-200 transform hover:scale-110 active:scale-95"
+                    />
+                    <button
+                      onClick={(e) => {
+                        e.stopPropagation()
+                        handleVisionLike(vision.id)
+                      }}
+                      className={`p-2 rounded-full transition-all duration-200 
+                        transform hover:scale-110 active:scale-95 
+                        ${
+                        isLiked 
+                          ? 'bg-red-500 text-white shadow-lg hover:bg-red-600' 
+                          : 'bg-white/20 backdrop-blur-sm text-white hover:bg-white/40 hover:shadow-md'
+                      }`}
+                    >
+                      <Heart className={`w-4 h-4 transition-all duration-200 ${isLiked ? 'fill-current' : ''}`} />
+                    </button>
+                  </div>
 
                   {/* Like Animation */}
                   {showAnimation && (
@@ -556,28 +783,49 @@ export default function CivizHomepage() {
                     </div>
                     <h3 className="text-white font-semibold text-sm leading-tight">{category.name}</h3>
                     
-                    {/* Points and Likes Display with glow for high points */}
-                    <div className={`flex items-center justify-between mt-1 text-xs ${
-                      image.points > 50 ? 'text-yellow-300' : 'text-white/80'
-                    }`}>
-                      <span className="flex items-center">
-                        <Heart className="w-3 h-3 mr-1 fill-current" />
-                        {image.likes}
-                      </span>
-                      <div className="flex items-center space-x-1">
-                        <span className={`font-semibold ${
-                          image.points > 50 ? 'text-shadow-glow' : ''
-                        }`}>{image.points} pts</span>
-                        {image.submitterId === CURRENT_USER_ID && (
-                          <Sparkles className="w-3 h-3 text-purple-300" />
-                        )}
+                    {/* Vision Info with Budget Impact for City View */}
+                    <div className="mt-1">
+                      {viewMode === "pulse" && vision.budgetImpact && (
+                        <div className="text-xs text-white/70 mb-1">
+                          ${(vision.budgetImpact.allocated / 1000000).toFixed(1)}M budget • {vision.budgetImpact.percentage}% used
+                        </div>
+                      )}
+                      <div className="flex items-center justify-between text-xs text-white/80">
+                        <span className="flex items-center">
+                          <Heart className="w-3 h-3 mr-1 fill-current" />
+                          {vision.likes}
+                        </span>
+                        <div className="flex items-center space-x-1">
+                          {vision.trending && (
+                            <span className="bg-red-500 text-white px-1 py-0.5 rounded text-[10px] font-bold">
+                              HOT
+                            </span>
+                          )}
+                          {isUserVision && (
+                            <Sparkles className="w-3 h-3 text-purple-300" />
+                          )}
+                        </div>
                       </div>
                     </div>
                   </div>
                   <div className="absolute inset-0 bg-blue-600/0 group-hover:bg-blue-600/20 transition-colors duration-300 pointer-events-none" />
-                </div>
+                </motion.div>
               )
             })}
+            </motion.div>
+          </AnimatePresence>
+          
+          {/* View All Button */}
+          <div className="mt-6 text-center">
+            <Link href="/gallery">
+              <Button variant="outline" className="group">
+                <Eye className="w-4 h-4 mr-2" />
+                View All Visions
+                <span className="ml-2 text-xs bg-blue-100 text-blue-600 px-2 py-0.5 rounded-full">
+                  {viewMode === "personal" ? myVisions.length : cityVisions.length}+
+                </span>
+              </Button>
+            </Link>
           </div>
         </div>
       </section>
