@@ -56,8 +56,13 @@ function buildEnhancedPrompt(userVision: string, categoryId: string): string {
 }
 
 export async function POST(request: NextRequest) {
+  let userVision: string = ''
+  let categoryId: string = ''
+  
   try {
-    const { userVision, categoryId } = await request.json()
+    const body = await request.json()
+    userVision = body.userVision
+    categoryId = body.categoryId
 
     if (!userVision || !categoryId) {
       return NextResponse.json(
@@ -136,15 +141,41 @@ export async function POST(request: NextRequest) {
     )
 
     // Race between generation and timeout
-    const output = await Promise.race([generatePromise, timeoutPromise]) as string[]
+    const output = await Promise.race([generatePromise, timeoutPromise]) as any
 
-    if (!output || output.length === 0) {
+    console.log('🔍 Replicate output type:', typeof output)
+    console.log('🔍 Replicate output:', JSON.stringify(output, null, 2))
+
+    if (!output) {
       throw new Error('No image generated from AI model')
+    }
+
+    // Handle different output formats from Replicate
+    let imageUrl: string = ''
+    
+    if (Array.isArray(output) && output.length > 0) {
+      // If it's an array, take the first element
+      imageUrl = typeof output[0] === 'string' ? output[0] : String(output[0])
+    } else if (typeof output === 'string') {
+      // If it's already a string URL
+      imageUrl = output
+    } else if (output && typeof output === 'object') {
+      // If it's an object, try to extract URL from common properties
+      imageUrl = output.url || output.output || output.image || String(output)
+    } else {
+      // Fallback to string conversion
+      imageUrl = String(output)
+    }
+
+    // Validate that we have a proper URL
+    if (!imageUrl || !imageUrl.startsWith('http')) {
+      console.error('Invalid image URL received:', output)
+      throw new Error('Invalid image URL from AI model')
     }
 
     const result = {
       id: `ai-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
-      imageUrl: output[0],
+      imageUrl: imageUrl,
       prompt: prompt,
       userVision: userVision,
       categoryId: categoryId,
@@ -185,9 +216,9 @@ export async function POST(request: NextRequest) {
       return NextResponse.json({
         id: `billing-fallback-${Date.now()}-${Math.random().toString(36).substr(2, 9)}`,
         imageUrl: categoryImages[categoryId] || categoryImages['community-services'],
-        prompt: buildEnhancedPrompt(userVision, categoryId),
-        userVision: userVision,
-        categoryId: categoryId,
+        prompt: userVision ? buildEnhancedPrompt(userVision, categoryId) : 'A beautiful civic vision for San Francisco',
+        userVision: userVision || 'Civic vision',
+        categoryId: categoryId || 'community-services',
         generatedAt: new Date().toISOString(),
         model: 'billing-fallback'
       })
